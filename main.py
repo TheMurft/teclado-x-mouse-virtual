@@ -1,16 +1,40 @@
 """Visualización de la cámara web en tiempo real usando OpenCV."""
 
 import json
+import time
 from pathlib import Path
+from urllib.request import urlretrieve
 
 try:
     import cv2
 except ImportError:
     cv2 = None
 
+try:
+    import mediapipe as mp
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision
+except ImportError:
+    mp = None
+    mp_python = None
+    vision = None
+
 
 NOMBRE_VENTANA = "Cámara"
 ARCHIVO_CONFIGURACION = Path(__file__).with_name("config.json")
+ARCHIVO_MODELO = Path(__file__).with_name("models") / "hand_landmarker.task"
+URL_MODELO = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/1/hand_landmarker.task"
+)
+CONEXIONES_MANO = (
+    (0, 1), (1, 2), (2, 3), (3, 4),
+    (0, 5), (5, 6), (6, 7), (7, 8),
+    (0, 9), (9, 10), (10, 11), (11, 12),
+    (0, 13), (13, 14), (14, 15), (15, 16),
+    (0, 17), (17, 18), (18, 19), (19, 20),
+    (5, 9), (9, 13), (13, 17),
+)
 RESOLUCIONES = (
     (640, 480),    # 1. VGA
     (1280, 720),   # 2. HD
@@ -149,6 +173,45 @@ def obtener_indice_resolucion(resolucion):
         return RESOLUCIONES.index(RESOLUCION_PREDETERMINADA)
 
 
+def asegurar_modelo_manos():
+    """Descarga el modelo oficial de MediaPipe Tasks si aún no existe."""
+    if ARCHIVO_MODELO.exists() and ARCHIVO_MODELO.stat().st_size > 0:
+        return True
+
+    try:
+        ARCHIVO_MODELO.parent.mkdir(parents=True, exist_ok=True)
+        print("Descargando el modelo de detección de manos...")
+        urlretrieve(URL_MODELO, ARCHIVO_MODELO)
+        return ARCHIVO_MODELO.exists() and ARCHIVO_MODELO.stat().st_size > 0
+    except (OSError, ValueError) as error:
+        try:
+            if ARCHIVO_MODELO.exists():
+                ARCHIVO_MODELO.unlink()
+        except OSError:
+            pass
+        print(f"Error: no se pudo descargar el modelo de MediaPipe: {error}")
+        print(f"Descárgalo manualmente desde: {URL_MODELO}")
+        print(f"Guárdalo como: {ARCHIVO_MODELO}")
+        return False
+
+
+def dibujar_landmarks_mano(imagen, landmarks):
+    """Dibuja los 21 landmarks normalizados de MediaPipe Tasks sobre la imagen."""
+    alto, ancho = imagen.shape[:2]
+    puntos = []
+
+    for landmark in landmarks:
+        x = min(max(int(landmark.x * ancho), 0), ancho - 1)
+        y = min(max(int(landmark.y * alto), 0), alto - 1)
+        puntos.append((x, y))
+
+    for inicio, fin in CONEXIONES_MANO:
+        cv2.line(imagen, puntos[inicio], puntos[fin], (255, 180, 0), 2, cv2.LINE_AA)
+
+    for punto in puntos:
+        cv2.circle(imagen, punto, 5, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(imagen, punto, 5, (40, 120, 255), 1, cv2.LINE_AA)
+
 
 def mostrar_camara():
     """Muestra la cámara y permite cambiar configuración con F1."""
@@ -159,6 +222,26 @@ def mostrar_camara():
         )
         return
 
+    if mp is None or mp_python is None or vision is None:
+        print(
+            "Error: MediaPipe Tasks no está disponible. "
+            "Instálalo con: pip install --upgrade mediapipe"
+        )
+        return
+
+    if not asegurar_modelo_manos():
+        return
+
+    opciones_manos = vision.HandLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(ARCHIVO_MODELO)),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.7,
+        min_hand_presence_confidence=0.7,
+        min_tracking_confidence=0.7,
+    )
+    manos = vision.HandLandmarker.create_from_options(opciones_manos)
+
     configuracion = cargar_configuracion()
     indice_camara = configuracion["indice_camara"]
     indice_resolucion_config = obtener_indice_resolucion(configuracion["resolucion"])
@@ -166,6 +249,7 @@ def mostrar_camara():
     camara = abrir_camara(indice_camara, resolucion)
 
     if camara is None:
+        manos.close()
         print(
             f"Error: no se pudo abrir {nombre_camara(indice_camara)}. "
             "Verifica que esté conectada y que ninguna otra aplicación la use."
@@ -177,6 +261,10 @@ def mostrar_camara():
     menu_abierto = False
     opcion_menu = 0
     mensaje_menu = ""
+    ultimo_tiempo = time.perf_counter()
+    inicio_video = ultimo_tiempo
+    ultimo_timestamp_ms = -1
+    fps = 0.0
 
     try:
         cv2.namedWindow(NOMBRE_VENTANA, cv2.WINDOW_NORMAL)
@@ -187,6 +275,42 @@ def mostrar_camara():
             if not lectura_exitosa:
                 print("Error: no se pudo leer una imagen de la cámara.")
                 break
+
+            tiempo_actual = time.perf_counter()
+            intervalo = tiempo_actual - ultimo_tiempo
+            ultimo_tiempo = tiempo_actual
+            if intervalo > 0:
+                fps = 1.0 / intervalo
+
+            imagen_rgb = cv2.cvtColor(imagen, cv2.COLOR_BGR2RGB)
+            timestamp_ms = max(
+                ultimo_timestamp_ms + 1,
+                int((tiempo_actual - inicio_video) * 1000),
+            )
+            ultimo_timestamp_ms = timestamp_ms
+            imagen_mediapipe = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=imagen_rgb,
+            )
+            resultado_manos = manos.detect_for_video(imagen_mediapipe, timestamp_ms)
+            mano_detectada = bool(resultado_manos.hand_landmarks)
+
+            if mano_detectada:
+                for puntos_mano in resultado_manos.hand_landmarks:
+                    dibujar_landmarks_mano(imagen, puntos_mano)
+
+            estado_mano = "MANO DETECTADA" if mano_detectada else "SIN MANO"
+            color_estado = (255, 255, 255) if mano_detectada else (80, 180, 255)
+            cv2.putText(
+                imagen,
+                f"{estado_mano} | FPS: {fps:.1f}",
+                (15, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                color_estado,
+                2,
+                cv2.LINE_AA,
+            )
 
             if menu_abierto:
                 dibujar_menu(imagen, indice_camara, indice_resolucion_config, opcion_menu, mensaje_menu)
@@ -237,6 +361,7 @@ def mostrar_camara():
                 else:
                     indice_resolucion_config = min(len(RESOLUCIONES) - 1, indice_resolucion_config + 1)
     finally:
+        manos.close()
         camara.release()
         cv2.destroyAllWindows()
 
