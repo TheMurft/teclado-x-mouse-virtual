@@ -32,7 +32,7 @@ python main.py
 
 Al iniciar, el programa utiliza automáticamente la configuración guardada en `config.json`. La cámara predeterminada es la cámara `0` y la resolución inicial es `1920x1080`.
 
-La aplicación procesa cada fotograma con **MediaPipe Tasks Hand Landmarker**, dibuja los 21 puntos de referencia de la mano detectada y muestra el estado de detección junto con los FPS aproximados. También identifica la pinza entre el pulgar y el índice. En el primer inicio descarga automáticamente el modelo `models/hand_landmarker.task` desde el repositorio oficial de modelos de MediaPipe.
+La aplicación procesa cada fotograma con **MediaPipe Tasks Hand Landmarker**, invierte horizontalmente la imagen para mostrarla como un espejo, rastrea hasta dos manos simultáneamente y dibuja los 21 puntos de referencia de cada una. Como la clasificación entregada por MediaPipe queda invertida con esta captura, el programa corrige explícitamente las etiquetas para mostrar la mano física real como **IZQUIERDA** o **DERECHA**. Solo la mano derecha controla el mouse; la mano izquierda se visualiza y rastrea, pero no ejecuta acciones. En el primer inicio descarga automáticamente el modelo `models/hand_landmarker.task` desde el repositorio oficial de modelos de MediaPipe.
 
 ## Detección de pinza
 
@@ -47,14 +47,14 @@ El umbral se guarda en `config.json` como `umbral_pinza` y puede ajustarse entre
 - **Flechas izquierda/derecha**: cambiar el valor seleccionado.
 - **Enter**: guardar y aplicar la configuración.
 - **Esc**: cancelar los cambios.
-- **Q**: cerrar la cámara y salir correctamente.
+- **Q o q**: cerrar la cámara y salir correctamente, incluso desde el menú.
 - **F2**: activar o pausar el control del mouse.
 
 También se pueden usar las teclas `W`, `A`, `S` y `D` como alternativa a las flechas dentro del menú.
 
 ## Control del mouse
 
-Presiona **F2** para activar el control. La punta del dedo índice mueve el cursor y la pinza entre pulgar e índice controla automáticamente el clic izquierdo. Presiona **F2** nuevamente para pausar el control. El movimiento se suaviza para reducir los saltos.
+Presiona **F2** para activar el control. Solo la mano derecha mueve el cursor con la punta del índice. Una pinza entre pulgar e índice controla automáticamente el clic izquierdo. Al juntar el pulgar con el dedo medio se ejecuta un clic derecho. Presiona **F2** nuevamente para pausar el control. El movimiento se suaviza para reducir los saltos.
 
 La detección es automática. Una pinza corta genera un clic izquierdo. Dos pinzas cortas consecutivas dentro del intervalo normal de Windows se reconocen como doble clic. Si mantienes la pinza aproximadamente `0.45` segundos, se ejecuta `mouseDown`; el botón permanece presionado hasta que separes los dedos y entonces se ejecuta `mouseUp`. Si se pierde la mano o se pausa el mouse, el botón se libera automáticamente.
 

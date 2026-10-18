@@ -50,6 +50,7 @@ CAMARA_PREDETERMINADA = 0
 RESOLUCION_PREDETERMINADA = RESOLUCIONES[2]
 CAMARAS_EN_MENU = 5  # Índices 0, 1, 2, 3 y 4.
 UMBRAL_PINZA_PREDETERMINADO = 30
+UMBRAL_CLIC_DERECHO = 40
 UMBRAL_LIBERACION_PINZA = 40
 FRAMES_ESTABLES_PINZA = 3
 SUAVIZADO_CURSOR = 0.35
@@ -250,6 +251,18 @@ def distancia_pulgar_indice(landmarks, ancho, alto):
     ), pulgar_xy, indice_xy
 
 
+def distancia_pulgar_medio(landmarks, ancho, alto):
+    """Calcula la distancia en píxeles entre el pulgar (4) y el medio (12)."""
+    pulgar = landmarks[4]
+    medio = landmarks[12]
+    pulgar_xy = (pulgar.x * ancho, pulgar.y * alto)
+    medio_xy = (medio.x * ancho, medio.y * alto)
+    return math.hypot(
+        medio_xy[0] - pulgar_xy[0],
+        medio_xy[1] - pulgar_xy[1],
+    ), pulgar_xy, medio_xy
+
+
 def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
     """Aplica histéresis y exige varios frames para evitar falsos cambios."""
     if pinza_activa:
@@ -268,6 +281,40 @@ def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
     else:
         frames_candidatos = 0
     return False, frames_candidatos
+
+
+def obtener_lateralidad_mano(resultado_manos, indice_mano):
+    """Devuelve la lateralidad física corregida para la cámara espejada.
+
+    En esta configuración MediaPipe entrega la etiqueta invertida, por lo
+    que se intercambian explícitamente LEFT y RIGHT.
+    """
+    try:
+        clasificaciones = resultado_manos.handedness[indice_mano]
+        if not clasificaciones:
+            return "DESCONOCIDA"
+
+        clasificacion = clasificaciones[0]
+        nombre = getattr(clasificacion, "category_name", "").lower()
+        confianza = getattr(clasificacion, "score", None)
+        lateralidad = {
+            "left": "IZQUIERDA",
+            "right": "DERECHA",
+        }.get(nombre, nombre.upper() or "DESCONOCIDA")
+        if isinstance(confianza, (int, float)):
+            return f"{lateralidad} ({confianza:.0%})"
+        return lateralidad
+    except (AttributeError, IndexError, TypeError):
+        return "DESCONOCIDA"
+
+
+def es_mano_derecha(resultado_manos, indice_mano):
+    """Indica si la mano física es derecha tras corregir la etiqueta invertida."""
+    try:
+        clasificacion = resultado_manos.handedness[indice_mano][0]
+        return getattr(clasificacion, "category_name", "").lower() == "left"
+    except (AttributeError, IndexError, TypeError):
+        return False
 
 
 def mostrar_camara():
@@ -299,7 +346,7 @@ def mostrar_camara():
     opciones_manos = vision.HandLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(ARCHIVO_MODELO)),
         running_mode=vision.RunningMode.VIDEO,
-        num_hands=1,
+        num_hands=2,
         min_hand_detection_confidence=0.7,
         min_hand_presence_confidence=0.7,
         min_tracking_confidence=0.7,
@@ -340,6 +387,9 @@ def mostrar_camara():
     boton_presionado = False
     inicio_pinza = None
     pinza_anterior = False
+    pinza_medio_activa = False
+    frames_candidatos_medio = 0
+    pinza_medio_anterior = False
 
     try:
         cv2.namedWindow(NOMBRE_VENTANA, cv2.WINDOW_NORMAL)
@@ -350,6 +400,7 @@ def mostrar_camara():
             if not lectura_exitosa:
                 print("Error: no se pudo leer una imagen de la cámara.")
                 break
+            imagen = cv2.flip(imagen, 1)
 
             tiempo_actual = time.perf_counter()
             intervalo = tiempo_actual - ultimo_tiempo
@@ -372,12 +423,31 @@ def mostrar_camara():
             distancia = None
             pulgar_xy = None
             indice_xy = None
+            distancia_medio = None
+            medio_xy = None
             pinza_anterior = pinza_activa
+            pinza_medio_anterior = pinza_medio_activa
+            mano_derecha_detectada = False
 
             if mano_detectada:
-                for puntos_mano in resultado_manos.hand_landmarks:
+                for numero_mano, puntos_mano in enumerate(resultado_manos.hand_landmarks):
                     dibujar_landmarks_mano(imagen, puntos_mano)
                     punta_indice = puntos_mano[8]
+                    lateralidad = obtener_lateralidad_mano(resultado_manos, numero_mano)
+                    cv2.putText(
+                        imagen,
+                        f"{lateralidad} | Mano {numero_mano + 1}",
+                        (max(int(punta_indice.x * imagen.shape[1]) - 45, 5),
+                         max(int(punta_indice.y * imagen.shape[0]) - 15, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (255, 220, 100),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    if not es_mano_derecha(resultado_manos, numero_mano):
+                        continue
+                    mano_derecha_detectada = True
                     if control_mouse_activo and not menu_abierto:
                         x_normalizado = min(
                             max((punta_indice.x - MARGEN_CURSOR) / (1 - 2 * MARGEN_CURSOR), 0.0),
@@ -423,6 +493,24 @@ def mostrar_camara():
                             else:
                                 pyautogui.click()
                             inicio_pinza = None
+                    distancia_medio, _, medio_xy = distancia_pulgar_medio(
+                        puntos_mano,
+                        imagen.shape[1],
+                        imagen.shape[0],
+                    )
+                    pinza_medio_activa, frames_candidatos_medio = actualizar_estado_pinza(
+                        distancia_medio,
+                        pinza_medio_activa,
+                        frames_candidatos_medio,
+                        UMBRAL_CLIC_DERECHO,
+                    )
+                    if (
+                        control_mouse_activo
+                        and not menu_abierto
+                        and not pinza_medio_activa
+                        and pinza_medio_anterior
+                    ):
+                        pyautogui.rightClick()
                     cv2.line(
                         imagen,
                         tuple(map(int, pulgar_xy)),
@@ -431,8 +519,16 @@ def mostrar_camara():
                         3,
                         cv2.LINE_AA,
                     )
+                    cv2.line(
+                        imagen,
+                        tuple(map(int, pulgar_xy)),
+                        tuple(map(int, medio_xy)),
+                        (0, 140, 255) if pinza_medio_activa else (100, 100, 100),
+                        2,
+                        cv2.LINE_AA,
+                    )
 
-            if not mano_detectada:
+            if not mano_derecha_detectada:
                 pinza_activa = False
                 frames_candidatos_pinza = 0
                 pinza_sostenida = boton_presionado
@@ -442,8 +538,17 @@ def mostrar_camara():
                 if control_mouse_activo and pinza_anterior and not pinza_sostenida:
                     pyautogui.click()
                 inicio_pinza = None
+                pinza_medio_activa = False
+                frames_candidatos_medio = 0
+                if control_mouse_activo and pinza_medio_anterior:
+                    pyautogui.rightClick()
 
-            estado_mano = "MANO DETECTADA" if mano_detectada else "SIN MANO"
+            cantidad_manos = len(resultado_manos.hand_landmarks)
+            estado_mano = (
+                f"{cantidad_manos} MANO(S) DETECTADA(S)"
+                if mano_detectada
+                else "SIN MANO"
+            )
             color_estado = (255, 255, 255) if mano_detectada else (80, 180, 255)
             cv2.putText(
                 imagen,
@@ -490,14 +595,27 @@ def mostrar_camara():
                     2,
                     cv2.LINE_AA,
                 )
+            if distancia_medio is not None:
+                estado_medio = "CLIC DERECHO LISTO" if pinza_medio_activa else "MEDIO ABIERTO"
+                cv2.putText(
+                    imagen,
+                    f"{estado_medio} | Pulgar-medio: {distancia_medio:.1f}px",
+                    (15, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 140, 255) if pinza_medio_activa else (190, 190, 190),
+                    2,
+                    cv2.LINE_AA,
+                )
 
             if menu_abierto:
                 dibujar_menu(imagen, indice_camara, indice_resolucion_config, opcion_menu, mensaje_menu)
 
             cv2.imshow(NOMBRE_VENTANA, imagen)
             tecla = cv2.waitKeyEx(1)
+            tecla_simple = tecla & 0xFF
 
-            if tecla & 0xFF == ord("q") and not menu_abierto:
+            if tecla_simple in (ord("q"), ord("Q")):
                 break
 
             if es_tecla_f1(tecla):
@@ -506,6 +624,9 @@ def mostrar_camara():
                 if menu_abierto and boton_presionado:
                     pyautogui.mouseUp(button="left")
                     boton_presionado = False
+                pinza_medio_activa = False
+                frames_candidatos_medio = 0
+                inicio_pinza = None
                 continue
 
             if es_tecla_f2(tecla) and not menu_abierto:
@@ -515,6 +636,9 @@ def mostrar_camara():
                 pinza_activa = False
                 frames_candidatos_pinza = 0
                 inicio_pinza = None
+                pinza_medio_activa = False
+                frames_candidatos_medio = 0
+                pinza_medio_anterior = False
                 if not control_mouse_activo and boton_presionado:
                     pyautogui.mouseUp(button="left")
                     boton_presionado = False
@@ -523,7 +647,6 @@ def mostrar_camara():
             if not menu_abierto:
                 continue
 
-            tecla_simple = tecla & 0xFF
             if tecla_simple == 27:  # Esc
                 menu_abierto = False
                 mensaje_menu = "Cambios cancelados."
