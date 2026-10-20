@@ -51,11 +51,25 @@ RESOLUCION_PREDETERMINADA = RESOLUCIONES[2]
 CAMARAS_EN_MENU = 5  # Índices 0, 1, 2, 3 y 4.
 UMBRAL_PINZA_PREDETERMINADO = 30
 UMBRAL_CLIC_DERECHO = 40
-UMBRAL_LIBERACION_PINZA = 40
 FRAMES_ESTABLES_PINZA = 3
-SUAVIZADO_CURSOR = 0.35
+TIEMPO_RESPUESTA_CURSOR = 0.08
 MARGEN_CURSOR = 0.08
 TIEMPO_CLIC_SOSTENIDO = 0.45
+FRAMES_ESTABLES_PUNO = 4
+INTERVALO_CAPTURA_SEGUNDOS = 1.5
+UMBRAL_PULGARES_JUNTOS = 60
+TIEMPO_ACTIVACION_MOUSE = 2.0
+TIEMPO_DESACTIVAR_MODOS = 0.8
+TECLAS_VIRTUALES = (
+    ("Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"),
+    ("A", "S", "D", "F", "G", "H", "J", "K", "L", ";"),
+    ("Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"),
+    ("COPIAR", "PEGAR"),
+)
+ANCHO_TECLA_VIRTUAL = 0.085
+ALTO_TECLA_VIRTUAL = 52
+SEPARACION_TECLA_VIRTUAL = 6
+FRAMES_TECLA_VIRTUAL = 3
 
 
 
@@ -77,15 +91,23 @@ def cargar_configuracion():
         with ARCHIVO_CONFIGURACION.open("r", encoding="utf-8") as archivo:
             guardada = json.load(archivo)
 
+        if not isinstance(guardada, dict):
+            return configuracion
+
         indice = guardada.get("indice_camara", CAMARA_PREDETERMINADA)
         resolucion = tuple(guardada.get("resolucion", RESOLUCION_PREDETERMINADA))
         umbral_pinza = guardada.get("umbral_pinza", UMBRAL_PINZA_PREDETERMINADO)
 
-        if isinstance(indice, int) and indice >= 0:
+        if isinstance(indice, int) and not isinstance(indice, bool) and indice >= 0:
             configuracion["indice_camara"] = indice
         if resolucion in RESOLUCIONES:
             configuracion["resolucion"] = list(resolucion)
-        if isinstance(umbral_pinza, (int, float)) and 10 <= umbral_pinza <= 100:
+        if (
+            isinstance(umbral_pinza, (int, float))
+            and not isinstance(umbral_pinza, bool)
+            and math.isfinite(umbral_pinza)
+            and 10 <= umbral_pinza <= 100
+        ):
             configuracion["umbral_pinza"] = float(umbral_pinza)
     except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
         # Se conservan los valores predeterminados y se repara el archivo al guardar.
@@ -137,12 +159,25 @@ def abrir_camara(indice_camara, resolucion):
     return camara
 
 
+def obtener_resolucion_camara(camara, alternativa):
+    """Devuelve la resolución informada por OpenCV o la solicitada como fallback."""
+    try:
+        ancho = int(camara.get(cv2.CAP_PROP_FRAME_WIDTH))
+        alto = int(camara.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    except (OverflowError, TypeError, ValueError):
+        return tuple(alternativa)
+    if ancho > 0 and alto > 0:
+        return ancho, alto
+    return tuple(alternativa)
+
+
  
 def es_tecla_f1(tecla):
     """Reconoce F1 en los códigos usados por OpenCV en distintos sistemas."""
     # En Windows waitKeyEx suele devolver VK_F1 desplazado 16 bits (0x700000).
     # En otros backends puede llegar como 65470 o con otros desplazamientos.
-    return tecla in (0x70, 0x70000, 0x700000, 65470) or ((tecla >> 16) & 0xFF) == 0x70
+    # Se omite 0x70 porque también es el código ASCII de "p" en algunos backends.
+    return tecla in (0x70000, 0x700000, 65470) or ((tecla >> 16) & 0xFF) == 0x70
 
 
 def es_tecla_f2(tecla):
@@ -265,8 +300,9 @@ def distancia_pulgar_medio(landmarks, ancho, alto):
 
 def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
     """Aplica histéresis y exige varios frames para evitar falsos cambios."""
+    umbral_liberacion = max(umbral + 10, umbral * 1.25)
     if pinza_activa:
-        if distancia > UMBRAL_LIBERACION_PINZA:
+        if distancia > umbral_liberacion:
             frames_candidatos += 1
             if frames_candidatos >= FRAMES_ESTABLES_PINZA:
                 return False, 0
@@ -298,8 +334,8 @@ def obtener_lateralidad_mano(resultado_manos, indice_mano):
         nombre = getattr(clasificacion, "category_name", "").lower()
         confianza = getattr(clasificacion, "score", None)
         lateralidad = {
-            "left": "IZQUIERDA",
-            "right": "DERECHA",
+            "left": "DERECHA",
+            "right": "IZQUIERDA",
         }.get(nombre, nombre.upper() or "DESCONOCIDA")
         if isinstance(confianza, (int, float)):
             return f"{lateralidad} ({confianza:.0%})"
@@ -315,6 +351,110 @@ def es_mano_derecha(resultado_manos, indice_mano):
         return getattr(clasificacion, "category_name", "").lower() == "left"
     except (AttributeError, IndexError, TypeError):
         return False
+
+
+def es_mano_izquierda(resultado_manos, indice_mano):
+    """Indica si la clasificación corregida corresponde a la mano izquierda."""
+    try:
+        clasificacion = resultado_manos.handedness[indice_mano][0]
+        return getattr(clasificacion, "category_name", "").lower() == "right"
+    except (AttributeError, IndexError, TypeError):
+        return False
+
+
+def mano_cerrada(landmarks):
+    """Detecta un puño usando la posición de las puntas de los cuatro dedos."""
+    pares_dedo = ((8, 6), (12, 10), (16, 14), (20, 18))
+    dedos_cerrados = sum(
+        1 for punta, articulacion in pares_dedo
+        if landmarks[punta].y > landmarks[articulacion].y
+    )
+    return dedos_cerrados >= 3
+
+
+def distancia_pulgares(landmarks_a, landmarks_b, ancho, alto):
+    """Calcula en píxeles la distancia entre los pulgares de dos manos."""
+    pulgar_a = landmarks_a[4]
+    pulgar_b = landmarks_b[4]
+    return math.hypot(
+        (pulgar_a.x - pulgar_b.x) * ancho,
+        (pulgar_a.y - pulgar_b.y) * alto,
+    )
+
+
+def distancia_pulgar_dedo(landmarks, indice_dedo, ancho, alto):
+    """Calcula la distancia en píxeles entre el pulgar y otro dedo."""
+    pulgar = landmarks[4]
+    dedo = landmarks[indice_dedo]
+    return math.hypot(
+        (pulgar.x - dedo.x) * ancho,
+        (pulgar.y - dedo.y) * alto,
+    )
+
+
+def construir_teclado_visual(ancho, alto):
+    """Construye teclas centradas y adaptadas al ancho real de la cámara."""
+    teclado = []
+    margen = max(18, int(ancho * 0.035))
+    separacion = max(4, int(ancho * 0.006))
+    alto_tecla = max(38, min(ALTO_TECLA_VIRTUAL, int(alto * 0.075)))
+    ancho_disponible = ancho - 2 * margen
+    ancho_tecla = (ancho_disponible - separacion * 9) / 10
+    y_inicial = alto - (alto_tecla * len(TECLAS_VIRTUALES) + separacion * (len(TECLAS_VIRTUALES) - 1)) - max(18, int(alto * 0.03))
+
+    for fila, teclas in enumerate(TECLAS_VIRTUALES):
+        cantidad_teclas = len(teclas)
+        ancho_tecla_fila = (
+            ancho_disponible - separacion * (cantidad_teclas - 1)
+        ) / cantidad_teclas
+        desplazamiento = (ancho - (ancho_tecla_fila * cantidad_teclas + separacion * (cantidad_teclas - 1))) / 2
+        for columna, etiqueta in enumerate(teclas):
+            x1 = int(desplazamiento + columna * (ancho_tecla_fila + separacion))
+            y1 = int(y_inicial + fila * (alto_tecla + separacion))
+            teclado.append((etiqueta, x1, y1, int(x1 + ancho_tecla_fila), y1 + alto_tecla))
+    return teclado
+
+
+def tecla_bajo_punto(teclado, x, y):
+    """Devuelve la tecla bajo la punta del índice, si existe."""
+    for tecla in teclado:
+        etiqueta, x1, y1, x2, y2 = tecla
+        if x1 <= x <= x2 and y1 <= y <= y2:
+            return tecla
+    return None
+
+
+def dibujar_teclado_visual(imagen, teclado, tecla_seleccionada, tecla_presionada):
+    """Dibuja el teclado con estados de puntero y pulsación diferenciados."""
+    for etiqueta, x1, y1, x2, y2 in teclado:
+        bajo_indice = etiqueta == tecla_seleccionada
+        presionada = etiqueta == tecla_presionada
+        color_relleno = (0, 190, 80) if presionada else (0, 120, 220) if bajo_indice else (45, 45, 55)
+        color_borde = (80, 255, 120) if presionada else (0, 240, 255) if bajo_indice else (180, 180, 190)
+        cv2.rectangle(imagen, (x1, y1), (x2, y2), color_relleno, -1)
+        cv2.rectangle(imagen, (x1, y1), (x2, y2), color_borde, 2)
+        escala = 0.65 if len(etiqueta) == 1 else 0.42
+        tam, _ = cv2.getTextSize(etiqueta, cv2.FONT_HERSHEY_SIMPLEX, escala, 2)
+        cv2.putText(
+            imagen,
+            etiqueta,
+            (x1 + (x2 - x1 - tam[0]) // 2, y1 + (y2 - y1 + tam[1]) // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            escala,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+
+def ejecutar_tecla_virtual(etiqueta):
+    """Ejecuta una tecla normal o uno de los dos botones de edición."""
+    if etiqueta == "COPIAR":
+        pyautogui.hotkey("ctrl", "c")
+    elif etiqueta == "PEGAR":
+        pyautogui.hotkey("ctrl", "v")
+    else:
+        pyautogui.press(etiqueta.lower())
 
 
 def mostrar_camara():
@@ -380,6 +520,7 @@ def mostrar_camara():
     pinza_activa = False
     frames_candidatos_pinza = 0
     control_mouse_activo = False
+    teclado_visual_activo = False
     cursor_x = None
     cursor_y = None
     pantalla_ancho, pantalla_alto = pyautogui.size()
@@ -390,10 +531,28 @@ def mostrar_camara():
     pinza_medio_activa = False
     frames_candidatos_medio = 0
     pinza_medio_anterior = False
+    frames_puno_izquierdo = 0
+    puno_izquierdo_activo = False
+    ultima_captura = 0.0
+    inicio_pulgares_juntos = None
+    gesto_pulgares_resuelto = False
+    inicio_indices_juntos = None
+    gesto_indices_resuelto = False
+    pinza_copiar_activa = False
+    frames_candidatos_copiar = 0
+    pinza_copiar_anterior = False
+    pinza_pegar_activa = False
+    frames_candidatos_pegar = 0
+    pinza_pegar_anterior = False
+    tecla_candidata = None
+    frames_tecla_candidata = 0
+    tecla_virtual_bloqueada = False
+    tecla_virtual_presionada = None
 
     try:
         cv2.namedWindow(NOMBRE_VENTANA, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(NOMBRE_VENTANA, resolucion[0], resolucion[1])
+        resolucion_real = obtener_resolucion_camara(camara, resolucion)
+        cv2.resizeWindow(NOMBRE_VENTANA, resolucion_real[0], resolucion_real[1])
 
         while True:
             lectura_exitosa, imagen = camara.read()
@@ -401,6 +560,8 @@ def mostrar_camara():
                 print("Error: no se pudo leer una imagen de la cámara.")
                 break
             imagen = cv2.flip(imagen, 1)
+            teclado_visual = construir_teclado_visual(imagen.shape[1], imagen.shape[0])
+            tecla_hover_actual = None
 
             tiempo_actual = time.perf_counter()
             intervalo = tiempo_actual - ultimo_tiempo
@@ -427,7 +588,13 @@ def mostrar_camara():
             medio_xy = None
             pinza_anterior = pinza_activa
             pinza_medio_anterior = pinza_medio_activa
+            pinza_copiar_anterior = pinza_copiar_activa
+            pinza_pegar_anterior = pinza_pegar_activa
             mano_derecha_detectada = False
+            mano_izquierda_detectada = False
+            puno_izquierdo_actual = False
+            landmarks_derecha = None
+            landmarks_izquierda = None
 
             if mano_detectada:
                 for numero_mano, puntos_mano in enumerate(resultado_manos.hand_landmarks):
@@ -445,9 +612,33 @@ def mostrar_camara():
                         2,
                         cv2.LINE_AA,
                     )
+                    if es_mano_izquierda(resultado_manos, numero_mano):
+                        mano_izquierda_detectada = True
+                        landmarks_izquierda = puntos_mano
+                        puno_izquierdo_actual = mano_cerrada(puntos_mano)
+                        if puno_izquierdo_actual:
+                            frames_puno_izquierdo += 1
+                            if (
+                                frames_puno_izquierdo >= FRAMES_ESTABLES_PUNO
+                                and not puno_izquierdo_activo
+                                and tiempo_actual - ultima_captura >= INTERVALO_CAPTURA_SEGUNDOS
+                            ):
+                                try:
+                                    pyautogui.hotkey("winleft", "printscreen")
+                                    ultima_captura = tiempo_actual
+                                    puno_izquierdo_activo = True
+                                    print("Captura de pantalla completa realizada.")
+                                except Exception as error:
+                                    print(f"Error al realizar la captura de pantalla: {error}")
+                        else:
+                            frames_puno_izquierdo = 0
+                            puno_izquierdo_activo = False
+                        continue
+
                     if not es_mano_derecha(resultado_manos, numero_mano):
                         continue
                     mano_derecha_detectada = True
+                    landmarks_derecha = puntos_mano
                     if control_mouse_activo and not menu_abierto:
                         x_normalizado = min(
                             max((punta_indice.x - MARGEN_CURSOR) / (1 - 2 * MARGEN_CURSOR), 0.0),
@@ -462,8 +653,11 @@ def mostrar_camara():
                         if cursor_x is None or cursor_y is None:
                             cursor_x, cursor_y = objetivo_x, objetivo_y
                         else:
-                            cursor_x += (objetivo_x - cursor_x) * SUAVIZADO_CURSOR
-                            cursor_y += (objetivo_y - cursor_y) * SUAVIZADO_CURSOR
+                            factor_suavizado = 1 - math.exp(
+                                -intervalo / TIEMPO_RESPUESTA_CURSOR
+                            )
+                            cursor_x += (objetivo_x - cursor_x) * factor_suavizado
+                            cursor_y += (objetivo_y - cursor_y) * factor_suavizado
                         pyautogui.moveTo(round(cursor_x), round(cursor_y), duration=0)
                     distancia, pulgar_xy, indice_xy = distancia_pulgar_indice(
                         puntos_mano,
@@ -528,6 +722,189 @@ def mostrar_camara():
                         cv2.LINE_AA,
                     )
 
+            distancia_copiar = None
+            distancia_pegar = None
+
+            # Los atajos manuales solo funcionan fuera del modo teclado.
+            if not teclado_visual_activo and landmarks_izquierda is not None:
+                distancia_copiar = distancia_pulgar_dedo(
+                    landmarks_izquierda, 8, imagen.shape[1], imagen.shape[0]
+                )
+                pinza_copiar_activa, frames_candidatos_copiar = actualizar_estado_pinza(
+                    distancia_copiar,
+                    pinza_copiar_activa,
+                    frames_candidatos_copiar,
+                    umbral_pinza,
+                )
+                if not pinza_copiar_activa and pinza_copiar_anterior:
+                    pyautogui.hotkey("ctrl", "c")
+
+                distancia_pegar = distancia_pulgar_dedo(
+                    landmarks_izquierda, 12, imagen.shape[1], imagen.shape[0]
+                )
+                pinza_pegar_activa, frames_candidatos_pegar = actualizar_estado_pinza(
+                    distancia_pegar,
+                    pinza_pegar_activa,
+                    frames_candidatos_pegar,
+                    umbral_pinza,
+                )
+                if not pinza_pegar_activa and pinza_pegar_anterior:
+                    pyautogui.hotkey("ctrl", "v")
+            else:
+                pinza_copiar_activa = False
+                frames_candidatos_copiar = 0
+                pinza_pegar_activa = False
+                frames_candidatos_pegar = 0
+
+            # Teclado visual: funciona con cualquiera de las dos manos cuando
+            # el modo teclado está activo. Índice apunta; pulgar-índice pulsa.
+            if teclado_visual_activo and not menu_abierto:
+                candidatos_teclado = []
+                for mano_teclado in (landmarks_derecha, landmarks_izquierda):
+                    if mano_teclado is None:
+                        continue
+                    punta_indice = mano_teclado[8]
+                    x_indice = int(punta_indice.x * imagen.shape[1])
+                    y_indice = int(punta_indice.y * imagen.shape[0])
+                    tecla_detectada = tecla_bajo_punto(teclado_visual, x_indice, y_indice)
+                    distancia_teclado = math.hypot(
+                        (mano_teclado[4].x - mano_teclado[8].x) * imagen.shape[1],
+                        (mano_teclado[4].y - mano_teclado[8].y) * imagen.shape[0],
+                    )
+                    if tecla_detectada is not None and distancia_teclado < UMBRAL_PINZA_PREDETERMINADO:
+                        candidatos_teclado.append(tecla_detectada[0])
+                    elif tecla_detectada is not None and not candidatos_teclado:
+                        tecla_hover_actual = tecla_detectada[0]
+                if candidatos_teclado:
+                    tecla_hover_actual = candidatos_teclado[0]
+                    if tecla_hover_actual == tecla_candidata:
+                        frames_tecla_candidata += 1
+                    else:
+                        tecla_candidata = tecla_hover_actual
+                        frames_tecla_candidata = 1
+                    if (
+                        frames_tecla_candidata >= FRAMES_TECLA_VIRTUAL
+                        and not tecla_virtual_bloqueada
+                    ):
+                        ejecutar_tecla_virtual(tecla_candidata)
+                        tecla_virtual_bloqueada = True
+                        tecla_virtual_presionada = tecla_candidata
+                else:
+                    frames_tecla_candidata = 0
+                    tecla_candidata = None
+                    tecla_virtual_bloqueada = False
+                    tecla_virtual_presionada = None
+            else:
+                tecla_candidata = None
+                frames_tecla_candidata = 0
+                tecla_virtual_bloqueada = False
+                tecla_virtual_presionada = None
+
+            if landmarks_izquierda is not None:
+                pulgar_izquierdo = landmarks_izquierda[4]
+                indice_izquierdo = landmarks_izquierda[8]
+                medio_izquierdo = landmarks_izquierda[12]
+                pulgar_xy_izquierdo = (
+                    int(pulgar_izquierdo.x * imagen.shape[1]),
+                    int(pulgar_izquierdo.y * imagen.shape[0]),
+                )
+                indice_xy_izquierdo = (
+                    int(indice_izquierdo.x * imagen.shape[1]),
+                    int(indice_izquierdo.y * imagen.shape[0]),
+                )
+                medio_xy_izquierdo = (
+                    int(medio_izquierdo.x * imagen.shape[1]),
+                    int(medio_izquierdo.y * imagen.shape[0]),
+                )
+                cv2.line(
+                    imagen,
+                    pulgar_xy_izquierdo,
+                    indice_xy_izquierdo,
+                    (0, 255, 0) if pinza_copiar_activa else (80, 100, 80),
+                    3,
+                    cv2.LINE_AA,
+                )
+                cv2.line(
+                    imagen,
+                    pulgar_xy_izquierdo,
+                    medio_xy_izquierdo,
+                    (255, 120, 0) if pinza_pegar_activa else (100, 80, 60),
+                    3,
+                    cv2.LINE_AA,
+                )
+
+            distancia_pulgares_actual = None
+            segundos_pulgares = 0.0
+            if landmarks_derecha is not None and landmarks_izquierda is not None:
+                distancia_pulgares_actual = distancia_pulgares(
+                    landmarks_derecha,
+                    landmarks_izquierda,
+                    imagen.shape[1],
+                    imagen.shape[0],
+                )
+                if distancia_pulgares_actual <= UMBRAL_PULGARES_JUNTOS:
+                    if inicio_pulgares_juntos is None:
+                        inicio_pulgares_juntos = tiempo_actual
+                        gesto_pulgares_resuelto = False
+                    segundos_pulgares = tiempo_actual - inicio_pulgares_juntos
+                    if segundos_pulgares >= TIEMPO_ACTIVACION_MOUSE and not gesto_pulgares_resuelto:
+                        if control_mouse_activo:
+                            control_mouse_activo = False
+                            teclado_visual_activo = True
+                        else:
+                            control_mouse_activo = True
+                            teclado_visual_activo = False
+                        gesto_pulgares_resuelto = True
+                        cursor_x = None
+                        cursor_y = None
+                        pinza_activa = False
+                        frames_candidatos_pinza = 0
+                        pinza_medio_activa = False
+                        frames_candidatos_medio = 0
+                        inicio_pinza = None
+                        if not control_mouse_activo and boton_presionado:
+                            pyautogui.mouseUp(button="left")
+                            boton_presionado = False
+                else:
+                    inicio_pulgares_juntos = None
+                    gesto_pulgares_resuelto = False
+            else:
+                inicio_pulgares_juntos = None
+                gesto_pulgares_resuelto = False
+
+            distancia_indices_actual = None
+            if landmarks_derecha is not None and landmarks_izquierda is not None:
+                indice_derecho = landmarks_derecha[8]
+                indice_izquierdo = landmarks_izquierda[8]
+                distancia_indices_actual = math.hypot(
+                    (indice_derecho.x - indice_izquierdo.x) * imagen.shape[1],
+                    (indice_derecho.y - indice_izquierdo.y) * imagen.shape[0],
+                )
+                if distancia_indices_actual <= UMBRAL_PULGARES_JUNTOS:
+                    if inicio_indices_juntos is None:
+                        inicio_indices_juntos = tiempo_actual
+                        gesto_indices_resuelto = False
+                    if (
+                        tiempo_actual - inicio_indices_juntos >= TIEMPO_DESACTIVAR_MODOS
+                        and not gesto_indices_resuelto
+                    ):
+                        control_mouse_activo = False
+                        teclado_visual_activo = False
+                        gesto_indices_resuelto = True
+                        if boton_presionado:
+                            pyautogui.mouseUp(button="left")
+                            boton_presionado = False
+                else:
+                    inicio_indices_juntos = None
+                    gesto_indices_resuelto = False
+            else:
+                inicio_indices_juntos = None
+                gesto_indices_resuelto = False
+
+            if not mano_izquierda_detectada:
+                frames_puno_izquierdo = 0
+                puno_izquierdo_activo = False
+
             if not mano_derecha_detectada:
                 pinza_activa = False
                 frames_candidatos_pinza = 0
@@ -560,17 +937,33 @@ def mostrar_camara():
                 2,
                 cv2.LINE_AA,
             )
-            estado_mouse = "MOUSE ACTIVO (F2)" if control_mouse_activo else "MOUSE PAUSADO (F2)"
+            if control_mouse_activo:
+                estado_modo = "MODO MOUSE ACTIVO"
+            elif teclado_visual_activo:
+                estado_modo = "MODO TECLADO ACTIVO"
+            else:
+                estado_modo = "MOUSE Y TECLADO DESACTIVADOS"
             cv2.putText(
                 imagen,
-                estado_mouse,
+                estado_modo,
                 (15, 90),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.58,
-                (0, 220, 255) if control_mouse_activo else (180, 180, 180),
+                (0, 220, 255) if control_mouse_activo else (0, 255, 120) if teclado_visual_activo else (180, 180, 180),
                 2,
                 cv2.LINE_AA,
             )
+            if distancia_pulgares_actual is not None and inicio_pulgares_juntos is not None:
+                cv2.putText(
+                    imagen,
+                    f"PULGARES JUNTOS: {min(segundos_pulgares, TIEMPO_ACTIVACION_MOUSE):.1f}/{TIEMPO_ACTIVACION_MOUSE:.1f} s",
+                    (15, 260),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 180, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
             modo_clic = "CLIC AUTOMATICO: CORTO / SOSTENIDO"
             cv2.putText(
                 imagen,
@@ -607,7 +1000,52 @@ def mostrar_camara():
                     2,
                     cv2.LINE_AA,
                 )
-
+            estado_captura = (
+                "PUÑO IZQUIERDO: CAPTURA"
+                if puno_izquierdo_actual
+                else "CAPTURA: PUÑO IZQUIERDO"
+            )
+            cv2.putText(
+                imagen,
+                estado_captura,
+                (15, 180),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.52,
+                (0, 255, 0) if puno_izquierdo_actual else (170, 170, 170),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                imagen,
+                (
+                    "COPIAR / PEGAR: USA LOS BOTONES DEL TECLADO"
+                    if teclado_visual_activo
+                    else "COPIAR: PULGAR + INDICE IZQUIERDO" + (" [LISTO]" if pinza_copiar_activa else "")
+                ),
+                (15, 210),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (0, 255, 0) if pinza_copiar_activa else (170, 170, 170),
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                imagen,
+                "PULGAR + INDICE PARA PULSAR TECLAS" if teclado_visual_activo else "PEGAR: PULGAR + MEDIO IZQUIERDO" + (" [LISTO]" if pinza_pegar_activa else ""),
+                (15, 235),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                (255, 120, 0) if pinza_pegar_activa else (170, 170, 170),
+                2,
+                cv2.LINE_AA,
+            )
+            if teclado_visual_activo and not menu_abierto:
+                dibujar_teclado_visual(
+                    imagen,
+                    teclado_visual,
+                    tecla_hover_actual,
+                    tecla_virtual_presionada,
+                )
             if menu_abierto:
                 dibujar_menu(imagen, indice_camara, indice_resolucion_config, opcion_menu, mensaje_menu)
 
@@ -630,7 +1068,14 @@ def mostrar_camara():
                 continue
 
             if es_tecla_f2(tecla) and not menu_abierto:
-                control_mouse_activo = not control_mouse_activo
+                if control_mouse_activo:
+                    control_mouse_activo = False
+                    teclado_visual_activo = True
+                elif teclado_visual_activo:
+                    control_mouse_activo = True
+                    teclado_visual_activo = False
+                else:
+                    teclado_visual_activo = True
                 cursor_x = None
                 cursor_y = None
                 pinza_activa = False
@@ -659,7 +1104,8 @@ def mostrar_camara():
                     camara.release()
                     camara = nueva_camara
                     resolucion = nueva_resolucion
-                    cv2.resizeWindow(NOMBRE_VENTANA, resolucion[0], resolucion[1])
+                    resolucion_real = obtener_resolucion_camara(nueva_camara, nueva_resolucion)
+                    cv2.resizeWindow(NOMBRE_VENTANA, resolucion_real[0], resolucion_real[1])
                     guardar_configuracion(indice_camara, resolucion, umbral_pinza)
                     menu_abierto = False
                     mensaje_menu = "Configuración guardada."
@@ -679,10 +1125,17 @@ def mostrar_camara():
                     indice_resolucion_config = min(len(RESOLUCIONES) - 1, indice_resolucion_config + 1)
     finally:
         if boton_presionado and pyautogui is not None:
-            pyautogui.mouseUp(button="left")
-        manos.close()
-        camara.release()
-        cv2.destroyAllWindows()
+            try:
+                pyautogui.mouseUp(button="left")
+            except Exception as error:
+                print(f"Error al liberar el botón del mouse: {error}")
+        try:
+            manos.close()
+        finally:
+            try:
+                camara.release()
+            finally:
+                cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

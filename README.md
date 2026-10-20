@@ -1,129 +1,54 @@
-# Teclado x Mouse Virtual — Visor de cámara
+# Teclado x Mouse Virtual
 
-Aplicación en Python para mostrar la imagen de una cámara web en tiempo real usando **OpenCV** y detectar los puntos de referencia de una mano mediante **MediaPipe**.
+Este programa usa la cámara para controlar el mouse con la mano y escribir con un teclado que aparece en la pantalla.
 
-## Requisitos
+## Qué necesitas
 
-- Python 3.9 o superior.
-- Una cámara web conectada y disponible.
-- OpenCV para Python.
-- MediaPipe para Python.
-- PyAutoGUI para controlar el cursor.
+- Windows y Python instalado.
+- Una cámara web.
 
-## Instalación
+## Cómo instalarlo
 
-Desde la carpeta del proyecto, instala las dependencias:
+1. Descarga este proyecto desde GitHub y abre la carpeta.
+2. Abre una terminal dentro de esa carpeta.
+3. Instala lo necesario:
 
-```bash
-pip install opencv-python mediapipe pyautogui
-```
+   ```powershell
+   py -m pip install -r requirements.txt
+   ```
 
-También puedes instalarla usando el intérprete del entorno virtual:
+4. Inicia el programa:
 
-```bash
-.venv\Scripts\python.exe -m pip install opencv-python mediapipe pyautogui
-```
+   ```powershell
+   py main.py
+   ```
 
-## Ejecución
+La primera vez puede descargar el modelo de manos. Para esa descarga necesitas conexión a Internet.
 
-```bash
-python main.py
-```
+## Cómo se usa
 
-Al iniciar, el programa utiliza automáticamente la configuración guardada en `config.json`. La cámara predeterminada es la cámara `0` y la resolución inicial es `1920x1080`.
+- **F1**: abre o cierra el menú para elegir cámara y resolución.
+- **Flechas** o **W A S D**: cambian las opciones del menú.
+- **Enter**: guarda la selección.
+- **Esc**: cancela los cambios.
+- **F2**: cambia entre el teclado y el mouse. Si ambos están apagados, activa el teclado.
+- **Q**: cierra el programa.
 
-La aplicación procesa cada fotograma con **MediaPipe Tasks Hand Landmarker**, invierte horizontalmente la imagen para mostrarla como un espejo, rastrea hasta dos manos simultáneamente y dibuja los 21 puntos de referencia de cada una. Como la clasificación entregada por MediaPipe queda invertida con esta captura, el programa corrige explícitamente las etiquetas para mostrar la mano física real como **IZQUIERDA** o **DERECHA**. Solo la mano derecha controla el mouse; la mano izquierda se visualiza y rastrea, pero no ejecuta acciones. En el primer inicio descarga automáticamente el modelo `models/hand_landmarker.task` desde el repositorio oficial de modelos de MediaPipe.
+Junta los dos pulgares durante 2 segundos para activar el mouse o cambiar entre los modos. Junta los dos índices para apagar ambos modos.
 
-## Detección de pinza
+### Mouse
 
-La distancia entre el pulgar (landmark 4) y el índice (landmark 8) se calcula en píxeles. La pinza se considera detectada cuando la distancia es menor que `30 px` durante tres fotogramas consecutivos. Para evitar cambios por temblor, la liberación se confirma cuando la distancia supera `40 px` durante tres fotogramas.
+En modo mouse, mueve el índice de la mano derecha para mover el cursor. Junta el pulgar con el índice para hacer clic izquierdo y con el dedo medio para hacer clic derecho. Mantén la pinza del pulgar y el índice para dejar presionado el botón.
 
-El umbral se guarda en `config.json` como `umbral_pinza` y puede ajustarse entre `10` y `100` píxeles sin cambiar el código.
+### Teclado en pantalla
 
-## Controles
+En modo teclado, apunta a una tecla con el índice y junta el pulgar con ese índice para pulsarla. Los botones **COPIAR** y **PEGAR** también están en el teclado.
 
-- **F1**: abrir o cerrar el menú de configuración.
-- **Flechas arriba/abajo**: seleccionar cámara o resolución dentro del menú.
-- **Flechas izquierda/derecha**: cambiar el valor seleccionado.
-- **Enter**: guardar y aplicar la configuración.
-- **Esc**: cancelar los cambios.
-- **Q o q**: cerrar la cámara y salir correctamente, incluso desde el menú.
-- **F2**: activar o pausar el control del mouse.
+Fuera del modo teclado, la mano izquierda permite copiar con pulgar e índice y pegar con pulgar y medio. Cerrar la mano izquierda en puño toma una captura de pantalla.
 
-También se pueden usar las teclas `W`, `A`, `S` y `D` como alternativa a las flechas dentro del menú.
+## Si algo no funciona
 
-## Control del mouse
-
-Presiona **F2** para activar el control. Solo la mano derecha mueve el cursor con la punta del índice. Una pinza entre pulgar e índice controla automáticamente el clic izquierdo. Al juntar el pulgar con el dedo medio se ejecuta un clic derecho. Presiona **F2** nuevamente para pausar el control. El movimiento se suaviza para reducir los saltos.
-
-La detección es automática. Una pinza corta genera un clic izquierdo. Dos pinzas cortas consecutivas dentro del intervalo normal de Windows se reconocen como doble clic. Si mantienes la pinza aproximadamente `0.45` segundos, se ejecuta `mouseDown`; el botón permanece presionado hasta que separes los dedos y entonces se ejecuta `mouseUp`. Si se pierde la mano o se pausa el mouse, el botón se libera automáticamente.
-
-## Cámaras disponibles
-
-El menú permite probar los índices de cámara `0`, `1`, `2`, `3` y `4`.
-
-OpenCV identifica los dispositivos por índice, por lo que el nombre mostrado será `Cámara 0`, `Cámara 1`, etc. Si una cámara no existe o está siendo utilizada por otra aplicación, el programa mostrará un mensaje de error.
-
-## Resoluciones
-
-El menú incluye estas resoluciones:
-
-1. `640x480` — VGA
-2. `1280x720` — HD
-3. `1920x1080` — Full HD
-
-Al aplicar una resolución, el tamaño de la ventana se actualiza automáticamente.
-
-## Configuración persistente
-
-Las preferencias se guardan automáticamente en `config.json` al presionar **Enter** en el menú:
-
-```json
-{
-    "indice_camara": 0,
-    "resolucion": [
-        1920,
-        1080
-    ],
-    "umbral_pinza": 30
-}
-```
-
-Para volver a los valores iniciales, elimina `config.json` y ejecuta nuevamente el programa.
-
-## Solución de problemas
-
-### OpenCV, MediaPipe o PyAutoGUI no están instalados
-
-Ejecuta:
-
-```bash
-pip install opencv-python mediapipe pyautogui
-```
-
-También puedes instalar solo MediaPipe si OpenCV ya está disponible:
-
-```bash
-pip install mediapipe
-```
-
-Si OpenCV y MediaPipe ya están instalados, instala únicamente el control del cursor:
-
-```bash
-pip install pyautogui
-```
-
-Si el primer inicio no puede descargar el modelo, descarga `hand_landmarker.task` desde la URL oficial indicada por el programa y guárdalo en la carpeta `models` del proyecto.
-
-### No se puede abrir la cámara
-
-Comprueba lo siguiente:
-
-1. La cámara está conectada.
-2. Otra aplicación no la está utilizando.
-3. Windows permite el acceso a la cámara para Python o PyCharm.
-4. Has seleccionado el índice correcto en el menú F1.
-
-### La resolución no es exactamente la solicitada
-
-Algunas cámaras solo admiten determinadas resoluciones. OpenCV solicita la resolución elegida, pero el controlador de la cámara puede seleccionar la más cercana disponible.
+- Si no aparece la cámara, prueba otro índice desde el menú **F1** y cierra otras aplicaciones que estén usando la cámara.
+- Si Windows bloquea el acceso, permite que Python use la cámara en la configuración de privacidad.
+- Si falta una dependencia, repite el paso de instalación.
+- Para cerrar el programa, vuelve a la ventana de la cámara y presiona **Q**.
