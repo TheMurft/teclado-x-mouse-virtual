@@ -1,8 +1,0 @@
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-.idea/
-.work/
-.manus/
-config.json
