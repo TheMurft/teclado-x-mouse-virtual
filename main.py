@@ -1,5 +1,3 @@
-"""Visualización de la cámara web en tiempo real usando OpenCV."""
-
 import json
 import math
 import time
@@ -42,13 +40,13 @@ CONEXIONES_MANO = (
     (5, 9), (9, 13), (13, 17),
 )
 RESOLUCIONES = (
-    (640, 480),    # 1. VGA
-    (1280, 720),   # 2. HD
-    (1920, 1080),  # 3. Full HD
+    (640, 480),
+    (1280, 720),
+    (1920, 1080),
 )
 CAMARA_PREDETERMINADA = 0
 RESOLUCION_PREDETERMINADA = RESOLUCIONES[2]
-CAMARAS_EN_MENU = 5  # Índices 0, 1, 2, 3 y 4.
+CAMARAS_EN_MENU = 5
 UMBRAL_PINZA_PREDETERMINADO = 30
 UMBRAL_CLIC_DERECHO = 40
 FRAMES_ESTABLES_PINZA = 3
@@ -72,9 +70,8 @@ SEPARACION_TECLA_VIRTUAL = 6
 FRAMES_TECLA_VIRTUAL = 3
 
 
-
 def configuracion_predeterminada():
-    """Devuelve una copia de la configuración inicial."""
+
     return {
         "indice_camara": CAMARA_PREDETERMINADA,
         "resolucion": list(RESOLUCION_PREDETERMINADA),
@@ -82,9 +79,8 @@ def configuracion_predeterminada():
     }
 
 
-
 def cargar_configuracion():
-    """Carga config.json y usa valores seguros si está ausente o es inválido."""
+
     configuracion = configuracion_predeterminada()
 
     try:
@@ -110,15 +106,14 @@ def cargar_configuracion():
         ):
             configuracion["umbral_pinza"] = float(umbral_pinza)
     except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
-        # Se conservan los valores predeterminados y se repara el archivo al guardar.
+
         pass
 
     return configuracion
 
 
-
 def guardar_configuracion(indice_camara, resolucion, umbral_pinza=None):
-    """Guarda la cámara y resolución elegidas para el siguiente inicio."""
+
     configuracion = {
         "indice_camara": indice_camara,
         "resolucion": list(resolucion),
@@ -135,19 +130,14 @@ def guardar_configuracion(indice_camara, resolucion, umbral_pinza=None):
         print(f"Error: no se pudo guardar {ARCHIVO_CONFIGURACION.name}: {error}")
 
 
-
 def nombre_camara(indice_camara):
-    """Devuelve el nombre visible de la cámara seleccionada.
 
-    OpenCV identifica las cámaras por índice, pero no expone el nombre comercial
-    del dispositivo. Por eso se muestra un nombre estable basado en ese índice.
-    """
+
     return f"Cámara {indice_camara}"
 
 
-
 def abrir_camara(indice_camara, resolucion):
-    """Abre una cámara y solicita la resolución indicada."""
+
     camara = cv2.VideoCapture(indice_camara)
     if not camara.isOpened():
         camara.release()
@@ -160,7 +150,7 @@ def abrir_camara(indice_camara, resolucion):
 
 
 def obtener_resolucion_camara(camara, alternativa):
-    """Devuelve la resolución informada por OpenCV o la solicitada como fallback."""
+
     try:
         ancho = int(camara.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto = int(camara.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -171,22 +161,19 @@ def obtener_resolucion_camara(camara, alternativa):
     return tuple(alternativa)
 
 
- 
 def es_tecla_f1(tecla):
-    """Reconoce F1 en los códigos usados por OpenCV en distintos sistemas."""
-    # En Windows waitKeyEx suele devolver VK_F1 desplazado 16 bits (0x700000).
-    # En otros backends puede llegar como 65470 o con otros desplazamientos.
-    # Se omite 0x70 porque también es el código ASCII de "p" en algunos backends.
+
+
     return tecla in (0x70000, 0x700000, 65470) or ((tecla >> 16) & 0xFF) == 0x70
 
 
 def es_tecla_f2(tecla):
-    """Reconoce F2 en los códigos usados por OpenCV en Windows."""
+
     return tecla in (0x71, 0x70001, 0x710000, 65471) or ((tecla >> 16) & 0xFF) == 0x71
 
 
 def dibujar_menu(imagen, indice_camara, indice_resolucion, opcion, mensaje=""):
-    """Dibuja el menú de configuración sobre el último fotograma."""
+
     alto, ancho = imagen.shape[:2]
     panel = imagen.copy()
     borde_derecho = min(ancho - 30, 780)
@@ -225,9 +212,8 @@ def dibujar_menu(imagen, indice_camara, indice_resolucion, opcion, mensaje=""):
         )
 
 
-
 def obtener_indice_resolucion(resolucion):
-    """Obtiene el índice de una resolución, usando la predeterminada si no coincide."""
+
     try:
         return RESOLUCIONES.index(tuple(resolucion))
     except ValueError:
@@ -235,7 +221,7 @@ def obtener_indice_resolucion(resolucion):
 
 
 def asegurar_modelo_manos():
-    """Descarga el modelo oficial de MediaPipe Tasks si aún no existe."""
+
     if ARCHIVO_MODELO.exists() and ARCHIVO_MODELO.stat().st_size > 0:
         return True
 
@@ -257,7 +243,7 @@ def asegurar_modelo_manos():
 
 
 def dibujar_landmarks_mano(imagen, landmarks):
-    """Dibuja los 21 landmarks normalizados de MediaPipe Tasks sobre la imagen."""
+
     alto, ancho = imagen.shape[:2]
     puntos = []
 
@@ -275,7 +261,7 @@ def dibujar_landmarks_mano(imagen, landmarks):
 
 
 def distancia_pulgar_indice(landmarks, ancho, alto):
-    """Calcula en píxeles la distancia entre los landmarks 4 y 8."""
+
     pulgar = landmarks[4]
     indice = landmarks[8]
     pulgar_xy = (pulgar.x * ancho, pulgar.y * alto)
@@ -287,7 +273,7 @@ def distancia_pulgar_indice(landmarks, ancho, alto):
 
 
 def distancia_pulgar_medio(landmarks, ancho, alto):
-    """Calcula la distancia en píxeles entre el pulgar (4) y el medio (12)."""
+
     pulgar = landmarks[4]
     medio = landmarks[12]
     pulgar_xy = (pulgar.x * ancho, pulgar.y * alto)
@@ -299,7 +285,7 @@ def distancia_pulgar_medio(landmarks, ancho, alto):
 
 
 def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
-    """Aplica histéresis y exige varios frames para evitar falsos cambios."""
+
     umbral_liberacion = max(umbral + 10, umbral * 1.25)
     if pinza_activa:
         if distancia > umbral_liberacion:
@@ -320,11 +306,8 @@ def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
 
 
 def obtener_lateralidad_mano(resultado_manos, indice_mano):
-    """Devuelve la lateralidad física corregida para la cámara espejada.
 
-    En esta configuración MediaPipe entrega la etiqueta invertida, por lo
-    que se intercambian explícitamente LEFT y RIGHT.
-    """
+
     try:
         clasificaciones = resultado_manos.handedness[indice_mano]
         if not clasificaciones:
@@ -345,7 +328,7 @@ def obtener_lateralidad_mano(resultado_manos, indice_mano):
 
 
 def es_mano_derecha(resultado_manos, indice_mano):
-    """Indica si la mano física es derecha tras corregir la etiqueta invertida."""
+
     try:
         clasificacion = resultado_manos.handedness[indice_mano][0]
         return getattr(clasificacion, "category_name", "").lower() == "left"
@@ -354,7 +337,7 @@ def es_mano_derecha(resultado_manos, indice_mano):
 
 
 def es_mano_izquierda(resultado_manos, indice_mano):
-    """Indica si la clasificación corregida corresponde a la mano izquierda."""
+
     try:
         clasificacion = resultado_manos.handedness[indice_mano][0]
         return getattr(clasificacion, "category_name", "").lower() == "right"
@@ -363,7 +346,7 @@ def es_mano_izquierda(resultado_manos, indice_mano):
 
 
 def mano_cerrada(landmarks):
-    """Detecta un puño usando la posición de las puntas de los cuatro dedos."""
+
     pares_dedo = ((8, 6), (12, 10), (16, 14), (20, 18))
     dedos_cerrados = sum(
         1 for punta, articulacion in pares_dedo
@@ -373,7 +356,7 @@ def mano_cerrada(landmarks):
 
 
 def distancia_pulgares(landmarks_a, landmarks_b, ancho, alto):
-    """Calcula en píxeles la distancia entre los pulgares de dos manos."""
+
     pulgar_a = landmarks_a[4]
     pulgar_b = landmarks_b[4]
     return math.hypot(
@@ -383,7 +366,7 @@ def distancia_pulgares(landmarks_a, landmarks_b, ancho, alto):
 
 
 def distancia_pulgar_dedo(landmarks, indice_dedo, ancho, alto):
-    """Calcula la distancia en píxeles entre el pulgar y otro dedo."""
+
     pulgar = landmarks[4]
     dedo = landmarks[indice_dedo]
     return math.hypot(
@@ -393,7 +376,7 @@ def distancia_pulgar_dedo(landmarks, indice_dedo, ancho, alto):
 
 
 def construir_teclado_visual(ancho, alto):
-    """Construye teclas centradas y adaptadas al ancho real de la cámara."""
+
     teclado = []
     margen = max(18, int(ancho * 0.035))
     separacion = max(4, int(ancho * 0.006))
@@ -416,7 +399,7 @@ def construir_teclado_visual(ancho, alto):
 
 
 def tecla_bajo_punto(teclado, x, y):
-    """Devuelve la tecla bajo la punta del índice, si existe."""
+
     for tecla in teclado:
         etiqueta, x1, y1, x2, y2 = tecla
         if x1 <= x <= x2 and y1 <= y <= y2:
@@ -425,7 +408,7 @@ def tecla_bajo_punto(teclado, x, y):
 
 
 def dibujar_teclado_visual(imagen, teclado, tecla_seleccionada, tecla_presionada):
-    """Dibuja el teclado con estados de puntero y pulsación diferenciados."""
+
     for etiqueta, x1, y1, x2, y2 in teclado:
         bajo_indice = etiqueta == tecla_seleccionada
         presionada = etiqueta == tecla_presionada
@@ -448,7 +431,7 @@ def dibujar_teclado_visual(imagen, teclado, tecla_seleccionada, tecla_presionada
 
 
 def ejecutar_tecla_virtual(etiqueta):
-    """Ejecuta una tecla normal o uno de los dos botones de edición."""
+
     if etiqueta == "COPIAR":
         pyautogui.hotkey("ctrl", "c")
     elif etiqueta == "PEGAR":
@@ -458,7 +441,7 @@ def ejecutar_tecla_virtual(etiqueta):
 
 
 def mostrar_camara():
-    """Muestra la cámara y permite cambiar configuración con F1."""
+
     if cv2 is None:
         print(
             "Error: OpenCV no está instalado. "
@@ -508,7 +491,7 @@ def mostrar_camara():
         )
         return
 
-    # Crea config.json incluso en el primer inicio, con cámara 0 como base.
+
     guardar_configuracion(indice_camara, resolucion, umbral_pinza)
     menu_abierto = False
     opcion_menu = 0
@@ -725,7 +708,7 @@ def mostrar_camara():
             distancia_copiar = None
             distancia_pegar = None
 
-            # Los atajos manuales solo funcionan fuera del modo teclado.
+
             if not teclado_visual_activo and landmarks_izquierda is not None:
                 distancia_copiar = distancia_pulgar_dedo(
                     landmarks_izquierda, 8, imagen.shape[1], imagen.shape[0]
@@ -756,8 +739,7 @@ def mostrar_camara():
                 pinza_pegar_activa = False
                 frames_candidatos_pegar = 0
 
-            # Teclado visual: funciona con cualquiera de las dos manos cuando
-            # el modo teclado está activo. Índice apunta; pulgar-índice pulsa.
+
             if teclado_visual_activo and not menu_abierto:
                 candidatos_teclado = []
                 for mano_teclado in (landmarks_derecha, landmarks_izquierda):
@@ -1092,10 +1074,10 @@ def mostrar_camara():
             if not menu_abierto:
                 continue
 
-            if tecla_simple == 27:  # Esc
+            if tecla_simple == 27:
                 menu_abierto = False
                 mensaje_menu = "Cambios cancelados."
-            elif tecla_simple in (13, 10):  # Enter
+            elif tecla_simple in (13, 10):
                 nueva_resolucion = RESOLUCIONES[indice_resolucion_config]
                 nueva_camara = abrir_camara(indice_camara, nueva_resolucion)
                 if nueva_camara is None:
@@ -1109,16 +1091,16 @@ def mostrar_camara():
                     guardar_configuracion(indice_camara, resolucion, umbral_pinza)
                     menu_abierto = False
                     mensaje_menu = "Configuración guardada."
-            elif tecla_simple == ord("w") or tecla in (2490368,):  # Arriba
+            elif tecla_simple == ord("w") or tecla in (2490368,):
                 opcion_menu = max(0, opcion_menu - 1)
-            elif tecla_simple == ord("s") or tecla in (2621440,):  # Abajo
+            elif tecla_simple == ord("s") or tecla in (2621440,):
                 opcion_menu = min(1, opcion_menu + 1)
-            elif tecla_simple == ord("a") or tecla in (2424832,):  # Izquierda
+            elif tecla_simple == ord("a") or tecla in (2424832,):
                 if opcion_menu == 0:
                     indice_camara = max(0, indice_camara - 1)
                 else:
                     indice_resolucion_config = max(0, indice_resolucion_config - 1)
-            elif tecla_simple == ord("d") or tecla in (2555904,):  # Derecha
+            elif tecla_simple == ord("d") or tecla in (2555904,):
                 if opcion_menu == 0:
                     indice_camara = min(CAMARAS_EN_MENU - 1, indice_camara + 1)
                 else:
