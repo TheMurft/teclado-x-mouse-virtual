@@ -54,20 +54,20 @@ TIEMPO_RESPUESTA_CURSOR = 0.08
 MARGEN_CURSOR = 0.08
 TIEMPO_CLIC_SOSTENIDO = 0.45
 FRAMES_ESTABLES_PUNO = 4
-INTERVALO_CAPTURA_SEGUNDOS = 1.5
+INTERVALO_CAPTURA_SEGUNDOS = 2.0
 UMBRAL_PULGARES_JUNTOS = 60
 TIEMPO_ACTIVACION_MOUSE = 2.0
 TIEMPO_DESACTIVAR_MODOS = 0.8
 TECLAS_VIRTUALES = (
     ("Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"),
-    ("A", "S", "D", "F", "G", "H", "J", "K", "L", ";"),
-    ("Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"),
-    ("COPIAR", "PEGAR"),
+    ("A", "S", "D", "F", "G", "H", "J", "K", "L"),
+    ("Z", "X", "C", "V", "B", "N", "M"),
+    ("ESPACIO", "BORRAR"),
 )
 ANCHO_TECLA_VIRTUAL = 0.085
-ALTO_TECLA_VIRTUAL = 52
+ALTO_TECLA_VIRTUAL = 48
 SEPARACION_TECLA_VIRTUAL = 6
-FRAMES_TECLA_VIRTUAL = 3
+FRAMES_TECLA_VIRTUAL = 23  # ~0.75 segundos a 30 FPS
 
 
 def configuracion_predeterminada():
@@ -305,6 +305,33 @@ def actualizar_estado_pinza(distancia, pinza_activa, frames_candidatos, umbral):
     return False, frames_candidatos
 
 
+def suavizar_landmarks(landmarks_actuales, landmarks_previos, factor_suavizado=0.5):
+    """
+    Suaviza landmarks usando filtro EMA (Exponential Moving Average).
+    factor_suavizado: 0 = sin suavizado, 1 = solo valor previo (máximo suavizado).
+    """
+    if landmarks_previos is None:
+        return landmarks_actuales
+
+    landmarks_suavizados = []
+    for i in range(len(landmarks_actuales)):
+        actual = landmarks_actuales[i]
+        previo = landmarks_previos[i]
+        x_suave = previo.x * factor_suavizado + actual.x * (1 - factor_suavizado)
+        y_suave = previo.y * factor_suavizado + actual.y * (1 - factor_suavizado)
+        z_suave = previo.z * factor_suavizado + actual.z * (1 - factor_suavizado)
+
+        class LandmarkSuave:
+            def __init__(self, x, y, z):
+                self.x = x
+                self.y = y
+                self.z = z
+
+        landmarks_suavizados.append(LandmarkSuave(x_suave, y_suave, z_suave))
+
+    return landmarks_suavizados
+
+
 def obtener_lateralidad_mano(resultado_manos, indice_mano):
 
 
@@ -378,12 +405,13 @@ def distancia_pulgar_dedo(landmarks, indice_dedo, ancho, alto):
 def construir_teclado_visual(ancho, alto):
 
     teclado = []
-    margen = max(18, int(ancho * 0.035))
+    margen_lateral = max(40, int(ancho * 0.06))
+    margen_inferior = max(120, int(alto * 0.18))
     separacion = max(4, int(ancho * 0.006))
-    alto_tecla = max(38, min(ALTO_TECLA_VIRTUAL, int(alto * 0.075)))
-    ancho_disponible = ancho - 2 * margen
+    alto_tecla = max(34, min(ALTO_TECLA_VIRTUAL, int(alto * 0.065)))
+    ancho_disponible = ancho - 2 * margen_lateral
     ancho_tecla = (ancho_disponible - separacion * 9) / 10
-    y_inicial = alto - (alto_tecla * len(TECLAS_VIRTUALES) + separacion * (len(TECLAS_VIRTUALES) - 1)) - max(18, int(alto * 0.03))
+    y_inicial = alto - (alto_tecla * len(TECLAS_VIRTUALES) + separacion * (len(TECLAS_VIRTUALES) - 1)) - margen_inferior
 
     for fila, teclas in enumerate(TECLAS_VIRTUALES):
         cantidad_teclas = len(teclas)
@@ -409,17 +437,18 @@ def tecla_bajo_punto(teclado, x, y):
 
 def dibujar_teclado_visual(imagen, teclado, tecla_seleccionada, tecla_presionada):
 
+    overlay = imagen.copy()
     for etiqueta, x1, y1, x2, y2 in teclado:
         bajo_indice = etiqueta == tecla_seleccionada
         presionada = etiqueta == tecla_presionada
         color_relleno = (0, 190, 80) if presionada else (0, 120, 220) if bajo_indice else (45, 45, 55)
         color_borde = (80, 255, 120) if presionada else (0, 240, 255) if bajo_indice else (180, 180, 190)
-        cv2.rectangle(imagen, (x1, y1), (x2, y2), color_relleno, -1)
-        cv2.rectangle(imagen, (x1, y1), (x2, y2), color_borde, 2)
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color_relleno, -1)
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), color_borde, 2)
         escala = 0.65 if len(etiqueta) == 1 else 0.42
         tam, _ = cv2.getTextSize(etiqueta, cv2.FONT_HERSHEY_SIMPLEX, escala, 2)
         cv2.putText(
-            imagen,
+            overlay,
             etiqueta,
             (x1 + (x2 - x1 - tam[0]) // 2, y1 + (y2 - y1 + tam[1]) // 2),
             cv2.FONT_HERSHEY_SIMPLEX,
@@ -428,6 +457,7 @@ def dibujar_teclado_visual(imagen, teclado, tecla_seleccionada, tecla_presionada
             2,
             cv2.LINE_AA,
         )
+    cv2.addWeighted(overlay, 0.75, imagen, 0.25, 0, imagen)
 
 
 def ejecutar_tecla_virtual(etiqueta):
@@ -436,6 +466,10 @@ def ejecutar_tecla_virtual(etiqueta):
         pyautogui.hotkey("ctrl", "c")
     elif etiqueta == "PEGAR":
         pyautogui.hotkey("ctrl", "v")
+    elif etiqueta == "ESPACIO":
+        pyautogui.press("space")
+    elif etiqueta == "BORRAR":
+        pyautogui.press("backspace")
     else:
         pyautogui.press(etiqueta.lower())
 
@@ -470,9 +504,9 @@ def mostrar_camara():
         base_options=mp_python.BaseOptions(model_asset_path=str(ARCHIVO_MODELO)),
         running_mode=vision.RunningMode.VIDEO,
         num_hands=2,
-        min_hand_detection_confidence=0.7,
-        min_hand_presence_confidence=0.7,
-        min_tracking_confidence=0.7,
+        min_hand_detection_confidence=0.8,
+        min_hand_presence_confidence=0.8,
+        min_tracking_confidence=0.8,
     )
     manos = vision.HandLandmarker.create_from_options(opciones_manos)
 
@@ -531,6 +565,9 @@ def mostrar_camara():
     frames_tecla_candidata = 0
     tecla_virtual_bloqueada = False
     tecla_virtual_presionada = None
+    landmarks_derecha_previos = None
+    landmarks_izquierda_previos = None
+    FACTOR_SUAVIDADO = 0.2
 
     try:
         cv2.namedWindow(NOMBRE_VENTANA, cv2.WINDOW_NORMAL)
@@ -597,18 +634,17 @@ def mostrar_camara():
                     )
                     if es_mano_izquierda(resultado_manos, numero_mano):
                         mano_izquierda_detectada = True
-                        landmarks_izquierda = puntos_mano
+                        landmarks_izquierda = suavizar_landmarks(puntos_mano, landmarks_izquierda_previos, FACTOR_SUAVIDADO)
+                        landmarks_izquierda_previos = landmarks_izquierda
                         puno_izquierdo_actual = mano_cerrada(puntos_mano)
-                        if puno_izquierdo_actual:
+                        if puno_izquierdo_actual and not teclado_visual_activo:
                             frames_puno_izquierdo += 1
                             if (
-                                frames_puno_izquierdo >= FRAMES_ESTABLES_PUNO
+                                frames_puno_izquierdo >= 30  # ~1 segundo a 30 FPS
                                 and not puno_izquierdo_activo
-                                and tiempo_actual - ultima_captura >= INTERVALO_CAPTURA_SEGUNDOS
                             ):
                                 try:
                                     pyautogui.hotkey("winleft", "printscreen")
-                                    ultima_captura = tiempo_actual
                                     puno_izquierdo_activo = True
                                     print("Captura de pantalla completa realizada.")
                                 except Exception as error:
@@ -621,7 +657,8 @@ def mostrar_camara():
                     if not es_mano_derecha(resultado_manos, numero_mano):
                         continue
                     mano_derecha_detectada = True
-                    landmarks_derecha = puntos_mano
+                    landmarks_derecha = suavizar_landmarks(puntos_mano, landmarks_derecha_previos, FACTOR_SUAVIDADO)
+                    landmarks_derecha_previos = landmarks_derecha
                     if control_mouse_activo and not menu_abierto:
                         x_normalizado = min(
                             max((punta_indice.x - MARGEN_CURSOR) / (1 - 2 * MARGEN_CURSOR), 0.0),
@@ -749,14 +786,8 @@ def mostrar_camara():
                     x_indice = int(punta_indice.x * imagen.shape[1])
                     y_indice = int(punta_indice.y * imagen.shape[0])
                     tecla_detectada = tecla_bajo_punto(teclado_visual, x_indice, y_indice)
-                    distancia_teclado = math.hypot(
-                        (mano_teclado[4].x - mano_teclado[8].x) * imagen.shape[1],
-                        (mano_teclado[4].y - mano_teclado[8].y) * imagen.shape[0],
-                    )
-                    if tecla_detectada is not None and distancia_teclado < UMBRAL_PINZA_PREDETERMINADO:
+                    if tecla_detectada is not None:
                         candidatos_teclado.append(tecla_detectada[0])
-                    elif tecla_detectada is not None and not candidatos_teclado:
-                        tecla_hover_actual = tecla_detectada[0]
                 if candidatos_teclado:
                     tecla_hover_actual = candidatos_teclado[0]
                     if tecla_hover_actual == tecla_candidata:
@@ -919,6 +950,20 @@ def mostrar_camara():
                 2,
                 cv2.LINE_AA,
             )
+            # Indicador de calidad de tracking
+            if mano_detectada:
+                calidad_tracking = "ESTABLE" if landmarks_derecha_previos is not None and landmarks_izquierda_previos is not None else "INICIALIZANDO..."
+                color_calidad = (0, 255, 100) if "ESTABLE" in calidad_tracking else (255, 180, 0)
+                cv2.putText(
+                    imagen,
+                    f"TRACKING: {calidad_tracking}",
+                    (15, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color_calidad,
+                    2,
+                    cv2.LINE_AA,
+                )
             if control_mouse_activo:
                 estado_modo = "MODO MOUSE ACTIVO"
             elif teclado_visual_activo:
@@ -970,6 +1015,21 @@ def mostrar_camara():
                     2,
                     cv2.LINE_AA,
                 )
+            # Mostrar tiempo de estancia en tecla para feedback visual
+            if teclado_visual_activo and tecla_candidata is not None:
+                tiempo_requerido = FRAMES_TECLA_VIRTUAL / 30.0  # ~0.75s a 30 FPS
+                progreso = min(frames_tecla_candidata / FRAMES_TECLA_VIRTUAL, 1.0)
+                color_progreso = (0, 255, 100) if frames_tecla_candidata >= FRAMES_TECLA_VIRTUAL else (0, 200, 255)
+                cv2.putText(
+                    imagen,
+                    f"TECLADO: {tecla_candidata} | {progreso:.0%} ({frames_tecla_candidata}/{FRAMES_TECLA_VIRTUAL} frames)",
+                    (15, 170),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    color_progreso,
+                    2,
+                    cv2.LINE_AA,
+                )
             if distancia_medio is not None:
                 estado_medio = "CLIC DERECHO LISTO" if pinza_medio_activa else "MEDIO ABIERTO"
                 cv2.putText(
@@ -982,18 +1042,23 @@ def mostrar_camara():
                     2,
                     cv2.LINE_AA,
                 )
-            estado_captura = (
-                "PUÑO IZQUIERDO: CAPTURA"
-                if puno_izquierdo_actual
-                else "CAPTURA: PUÑO IZQUIERDO"
-            )
+            if teclado_visual_activo:
+                estado_captura = "CAPTURA: DESACTIVADA (TECLADO ACTIVO)"
+                color_captura = (170, 170, 170)
+            elif puno_izquierdo_actual:
+                progreso = min(frames_puno_izquierdo / 30.0, 1.0)
+                estado_captura = f"PUÑO IZQUIERDO: CAPTURA {progreso:.0%}"
+                color_captura = (0, 255, 0)
+            else:
+                estado_captura = "CAPTURA: PUÑO IZQUIERDO (1s)"
+                color_captura = (170, 170, 170)
             cv2.putText(
                 imagen,
                 estado_captura,
                 (15, 180),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.52,
-                (0, 255, 0) if puno_izquierdo_actual else (170, 170, 170),
+                color_captura,
                 2,
                 cv2.LINE_AA,
             )
@@ -1013,7 +1078,7 @@ def mostrar_camara():
             )
             cv2.putText(
                 imagen,
-                "PULGAR + INDICE PARA PULSAR TECLAS" if teclado_visual_activo else "PEGAR: PULGAR + MEDIO IZQUIERDO" + (" [LISTO]" if pinza_pegar_activa else ""),
+                "PINZA (PULGAR+INDICE) SOBRE TECLA 0.75s" if teclado_visual_activo else "PEGAR: PULGAR + MEDIO IZQUIERDO" + (" [LISTO]" if pinza_pegar_activa else ""),
                 (15, 235),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.48,
